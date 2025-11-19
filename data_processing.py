@@ -1,5 +1,4 @@
 import csv
-import os
 from pathlib import Path
 
 
@@ -26,79 +25,122 @@ class DataLoader:
         return data
 
 
+class DB:
+    """Simple in-memory database."""
+
+    def __init__(self):
+        self.tables = {}
+
+    def insert(self, table):
+        self.tables[table.table_name] = table
+
+    def search(self, name):
+        return self.tables.get(name, None)
+
+
 class Table:
-    """Represents a table of data with basic filtering and aggregation."""
+    def __init__(self, table_name, table):
+        self.table_name = table_name
+        self.table = table
 
-    def __init__(self, name, dict_list):
-        self.name = name
-        self.dict_list = dict_list
+    def __str__(self):
+        return f"{self.table_name}:" + str(self.table)
 
-    def filter(self, condition_func):
-        """Return a new Table containing rows that match the condition."""
-        filtered_data = [row for row in self.dict_list if condition_func(row)]
-        return Table(self.name, filtered_data)
+    def filter(self, func):
+        filtered = [row for row in self.table if func(row)]
+        return Table(self.table_name, filtered)
 
-    def aggregate(self, agg_func, column_name):
-        """Aggregate values of a specific column using the provided function."""
-        temps = []
-        for item in self.dict_list:
+    def aggregate(self, func, column):
+        values = []
+        for row in self.table:
             try:
-                temps.append(float(item[column_name]))
+                values.append(float(row[column]))
             except ValueError:
-                temps.append(item[column_name])
-        return agg_func(temps)
+                values.append(row[column])
+        return func(values)
+
+    def join(self, other_table, key):
+        """
+        Inner join on the given key.
+        Keeps values from the left table, and adds only non-duplicate
+        columns from the right table.
+        """
+        joined = []
+        lookup = {}
+
+        # Index other_table by key
+        for r in other_table.table:
+            lookup.setdefault(r[key], []).append(r)
+
+        for row in self.table:
+            k = row.get(key)
+            if k in lookup:
+                for r in lookup[k]:
+                    merged = dict(row)
+                    for col, val in r.items():
+                        if col != key and col not in merged:
+                            merged[col] = val
+                    joined.append(merged)
+
+        return Table(self.table_name + "_joined_" + other_table.table_name, joined)
 
 
-if __name__ == "__main__":
-    loader = DataLoader()
-    cities = loader.load_csv('Cities.csv')
-    my_table = Table('cities', cities)
+# ------------------ TEST CODE ------------------
 
-    # Average temperature of all cities
-    avg_temp = my_table.aggregate(lambda x: sum(x) / len(x), 'temperature')
-    print("Average temperature of all cities:")
-    print(avg_temp)
-    print()
+loader = DataLoader()
 
-    # All cities in Germany
-    germany_cities = my_table.filter(lambda x: x['country'] == 'Germany')
-    cities_list = [[c['city'], c['country']] for c in germany_cities.dict_list]
-    print("All cities in Germany:")
-    for city in cities_list:
-        print(city)
-    print()
+cities = loader.load_csv('Cities.csv')
+table1 = Table('cities', cities)
 
-    # All cities in Spain with temperature above 12°C
-    spain_hot = my_table.filter(
-        lambda x: x['country'] == 'Spain' and float(x['temperature']) > 12.0
-    )
-    spain_list = [
-        [c['city'], c['country'], c['temperature']]
-        for c in spain_hot.dict_list
-    ]
-    print("All cities in Spain with temperature above 12°C:")
-    for city in spain_list:
-        print(city)
-    print()
+countries = loader.load_csv('Countries.csv')
+table2 = Table('countries', countries)
 
-    # Number of unique countries
-    num_countries = my_table.aggregate(lambda x: len(set(x)), 'country')
-    print("The number of unique countries is:")
-    print(num_countries)
-    print()
+my_DB = DB()
+my_DB.insert(table1)
+my_DB.insert(table2)
 
-    # Average temperature of all cities in Germany
-    avg_germany = my_table.filter(
-        lambda x: x['country'] == 'Germany'
-    ).aggregate(lambda x: sum(x) / len(x), 'temperature')
-    print("Average temperature of all cities in Germany:")
-    print(avg_germany)
-    print()
+my_table1 = my_DB.search('cities')
+print("List all cities in Italy:")
+my_table1_filtered = my_table1.filter(lambda x: x['country'] == 'Italy')
+print(my_table1_filtered)
+print()
 
-    # Max temperature of all cities in Italy
-    max_italy = my_table.filter(
-        lambda x: x['country'] == 'Italy'
-    ).aggregate(lambda x: max(x), 'temperature')
-    print("Max temperature of all cities in Italy:")
-    print(max_italy)
-    print()
+print("Average temperature for all cities in Italy:")
+print(my_table1_filtered.aggregate(lambda x: sum(x) / len(x), 'temperature'))
+print()
+
+my_table2 = my_DB.search('countries')
+print("List all non-EU countries:")
+my_table2_filtered = my_table2.filter(lambda x: x['EU'] == 'no')
+print(my_table2_filtered)
+print()
+
+print("Number of countries that have coastline:")
+print(
+    my_table2.filter(lambda x: x['coastline'] == 'yes')
+    .aggregate(lambda x: len(x), 'coastline')
+)
+print()
+
+my_table3 = my_table1.join(my_table2, 'country')
+print("First 5 entries of the joined table (cities and countries):")
+for item in my_table3.table[:5]:
+    print(item)
+print()
+
+print("Cities whose temperatures are below 5.0 in non-EU countries:")
+my_table3_filtered = (
+    my_table3.filter(lambda x: x['EU'] == 'no')
+    .filter(lambda x: float(x['temperature']) < 5.0)
+)
+print(my_table3_filtered.table)
+print()
+
+print("The min and max temperatures for cities in EU countries that do not have coastlines")
+my_table3_filtered = (
+    my_table3.filter(lambda x: x['EU'] == 'yes')
+    .filter(lambda x: x['coastline'] == 'no')
+)
+print("Min temp:", my_table3_filtered.aggregate(lambda x: min(x), 'temperature'))
+print("Max temp:", my_table3_filtered.aggregate(lambda x: max(x), 'temperature'))
+print()
